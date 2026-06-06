@@ -1,0 +1,1709 @@
+openapi: 3.0.3
+info:
+  title: Monopoly IoT API
+  version: 1.0.0
+  description: |
+    API REST esposte dall'API Gateway del sistema Monopoly IoT.
+
+    Il sistema è composto da 5 microservizi:
+    - **api-gateway** (porta 8080) — punto di ingresso unico
+    - **user-service** (porta 8081) — gestione utenti
+    - **match-service** (porta 8082) — partite, tornei, motore di gioco
+    - **board-service** (porta 8083) — sedi, tavoli, zone RFID
+    - **iot-gateway** (porta 8085) — acquisizione eventi MQTT, buffer offline
+
+    Tutte le richieste vengono inoltrate dal Gateway ai servizi interni.
+servers:
+  - url: http://localhost:8080
+    description: API Gateway locale
+
+tags:
+  - name: Users
+    description: Gestione utenti e profili
+  - name: Player Dashboard
+    description: Dashboard personalizzata per giocatore
+  - name: Board
+    description: Sedi, tavoli di gioco e zone di lettura RFID
+  - name: Matches
+    description: Creazione, gestione e ciclo di vita delle partite
+  - name: Tournaments
+    description: Tornei con bracket automatico
+  - name: Analytics
+    description: Metriche aggregate e classifica globale
+  - name: Game Settings
+    description: Impostazioni globali di gioco
+  - name: IoT Sync
+    description: Monitoraggio e sincronizzazione buffer offline IoT
+
+paths:
+  # ─────────────────────────────────────────────────────────────
+  # USERS (→ user-service :8081)
+  # ─────────────────────────────────────────────────────────────
+  /api/users:
+    get:
+      tags: [Users]
+      summary: Elenco utenti
+      operationId: listUsers
+      responses:
+        "200":
+          description: Lista utenti
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      tags: [Users]
+      summary: Crea utente (registrazione)
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+            example:
+              username: "mario_rossi"
+              email: "mario@example.com"
+              passwordHash: "abc123"
+              fullName: "Mario Rossi"
+              active: true
+              wantsTournament: false
+      responses:
+        "200":
+          description: Utente creato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /api/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Users]
+      summary: Dettaglio utente
+      operationId: getUserById
+      responses:
+        "200":
+          description: Utente trovato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Utente non trovato
+    put:
+      tags: [Users]
+      summary: Aggiorna utente
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: Utente aggiornato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Utente non trovato
+    delete:
+      tags: [Users]
+      summary: Elimina utente
+      operationId: deleteUser
+      responses:
+        "200":
+          description: Utente eliminato
+        "404":
+          description: Utente non trovato
+
+  /api/users/{id}/profile:
+    put:
+      tags: [Users]
+      summary: Aggiorna profilo utente (bio, avatar, genere, età)
+      operationId: updateUserProfile
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: Profilo aggiornato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Utente non trovato
+
+  /api/users/{id}/wants-tournament:
+    put:
+      tags: [Users]
+      summary: Imposta disponibilità ai tornei
+      operationId: setWantsTournament
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - name: wants
+          in: query
+          required: true
+          schema:
+            type: boolean
+          description: true = disponibile a partecipare ai tornei
+      responses:
+        "200":
+          description: Preferenza aggiornata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /api/users/{id}/notice:
+    put:
+      tags: [Users]
+      summary: Imposta comunicazione amministrativa per utente
+      operationId: setAdminNotice
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notice]
+              properties:
+                notice:
+                  type: string
+                  example: "Il tuo account è stato promosso a Venue Manager."
+      responses:
+        "200":
+          description: Notice impostata
+    delete:
+      tags: [Users]
+      summary: Cancella comunicazione amministrativa
+      operationId: deleteAdminNotice
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Notice cancellata
+
+  /api/users/{id}/change-password:
+    put:
+      tags: [Users]
+      summary: Cambia password utente
+      operationId: changePassword
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+      responses:
+        "200":
+          description: Password modificata con successo
+        "400":
+          description: Password corrente errata o richiesta non valida
+
+  # ─────────────────────────────────────────────────────────────
+  # PLAYER DASHBOARD (→ match-service :8082, routing speciale)
+  # ─────────────────────────────────────────────────────────────
+  /api/users/{id}/dashboard:
+    get:
+      tags: [Player Dashboard]
+      summary: Dashboard personalizzata del giocatore
+      description: |
+        Restituisce ranking, tier, storico partite, saldo medio,
+        partite disponibili, tornei vinti e partite a cui il giocatore è iscritto.
+        **Nota**: questa rotta è gestita dal match-service (non user-service).
+      operationId: getPlayerDashboard
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Dati dashboard giocatore
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerDashboardDTO"
+
+  # ─────────────────────────────────────────────────────────────
+  # BOARD — Sedi, Tavoli, Zone RFID (→ board-service :8083)
+  # ─────────────────────────────────────────────────────────────
+  /api/venues:
+    get:
+      tags: [Board]
+      summary: Elenco sedi
+      operationId: listVenues
+      responses:
+        "200":
+          description: Lista sedi
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Venue"
+    post:
+      tags: [Board]
+      summary: Crea sede
+      operationId: createVenue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Venue"
+      responses:
+        "200":
+          description: Sede creata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+
+  /api/venues/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Board]
+      summary: Dettaglio sede
+      operationId: getVenueById
+      responses:
+        "200":
+          description: Sede trovata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+        "404":
+          description: Sede non trovata
+    put:
+      tags: [Board]
+      summary: Aggiorna sede
+      operationId: updateVenue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Venue"
+      responses:
+        "200":
+          description: Sede aggiornata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+    delete:
+      tags: [Board]
+      summary: Elimina sede
+      operationId: deleteVenue
+      responses:
+        "200":
+          description: Sede eliminata
+
+  /api/venues/list:
+    get:
+      tags: [Board]
+      summary: Elenco sedi con tavoli associati
+      operationId: listVenuesWithTables
+      responses:
+        "200":
+          description: Lista sedi con i rispettivi tavoli
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VenueWithTables"
+
+  /api/venues/dashboard/{userId}:
+    get:
+      tags: [Board]
+      summary: Dashboard sede per gestore
+      description: |
+        Restituisce stato dei tavoli, partite attive, occupancy e ultimi eventi
+        per la sede associata all'utente (ownerUserId).
+        **Nota**: questa rotta è gestita dal match-service.
+      operationId: getVenueDashboard
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Dashboard sede
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VenueDashboardDTO"
+        "404":
+          description: Sede non trovata per questo gestore
+
+  /api/gametables:
+    get:
+      tags: [Board]
+      summary: Elenco tavoli di gioco
+      operationId: listGameTables
+      responses:
+        "200":
+          description: Lista tavoli
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GameTable"
+    post:
+      tags: [Board]
+      summary: Crea tavolo di gioco
+      description: |
+        Crea un nuovo tavolo e clona automaticamente le ReadingZone
+        del tavolo template (id=1), aggiornando i prefissi dei codici sensore.
+      operationId: createGameTable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GameTable"
+            example:
+              venueId: 1
+              status: "ONLINE"
+              displayName: "Tavolo Nexus-02"
+              tableCode: "TBL002"
+      responses:
+        "200":
+          description: Tavolo creato con zone RFID clonate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameTable"
+
+  /api/gametables/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Board]
+      summary: Dettaglio tavolo
+      operationId: getGameTableById
+      responses:
+        "200":
+          description: Tavolo trovato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameTable"
+        "404":
+          description: Tavolo non trovato
+    put:
+      tags: [Board]
+      summary: Aggiorna tavolo
+      operationId: updateGameTable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GameTable"
+      responses:
+        "200":
+          description: Tavolo aggiornato
+    delete:
+      tags: [Board]
+      summary: Elimina tavolo
+      operationId: deleteGameTable
+      responses:
+        "200":
+          description: Tavolo eliminato
+
+  /api/reading-zones:
+    get:
+      tags: [Board]
+      summary: Elenco zone di lettura RFID
+      operationId: listReadingZones
+      responses:
+        "200":
+          description: Lista zone RFID
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReadingZone"
+
+  /api/reading-zones/{id}:
+    get:
+      tags: [Board]
+      summary: Dettaglio zona di lettura
+      operationId: getReadingZoneById
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Zona trovata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadingZone"
+        "404":
+          description: Zona non trovata
+
+  # ─────────────────────────────────────────────────────────────
+  # MATCHES (→ match-service :8082)
+  # ─────────────────────────────────────────────────────────────
+  /api/matches:
+    get:
+      tags: [Matches]
+      summary: Elenco partite
+      operationId: listMatches
+      responses:
+        "200":
+          description: Lista partite
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Match"
+
+  /api/matches/create:
+    post:
+      tags: [Matches]
+      summary: Crea partita pianificata (status=CREATED)
+      operationId: createMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gameTableId]
+              properties:
+                gameTableId:
+                  type: integer
+                  format: int64
+                  example: 1
+                maxPlayers:
+                  type: integer
+                  default: 4
+                  example: 4
+                scheduledTime:
+                  type: string
+                  example: "2026-06-10T18:00:00"
+      responses:
+        "200":
+          description: Partita creata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+        "400":
+          description: gameTableId mancante
+
+  /api/matches/start:
+    post:
+      tags: [Matches]
+      summary: Crea e avvia direttamente una partita (status=STARTED)
+      operationId: startMatchDirect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Match"
+      responses:
+        "200":
+          description: Partita avviata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+
+  /api/matches/join:
+    post:
+      tags: [Matches]
+      summary: Iscrive un giocatore a una partita
+      description: |
+        Se `matchId` è specificato, iscrive il giocatore a quella partita.
+        Altrimenti cerca la prima partita in stato CREATED, o ne crea una nuova.
+      operationId: joinMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                  example: 42
+                matchId:
+                  type: integer
+                  format: int64
+                  example: 7
+                  description: Opzionale. Se omesso, viene usato matchmaking automatico.
+      responses:
+        "200":
+          description: Iscrizione completata
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Iscritto con successo alla Partita #7"
+        "400":
+          description: Partita piena, già iscritto o stato non valido
+
+  /api/matches/leave:
+    post:
+      tags: [Matches]
+      summary: Annulla iscrizione a una partita (solo se status=CREATED)
+      operationId: leaveMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, matchId]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                matchId:
+                  type: integer
+                  format: int64
+      responses:
+        "200":
+          description: Iscrizione annullata
+        "400":
+          description: Non iscritto o partita già avviata
+
+  /api/matches/{id}/start-match:
+    post:
+      tags: [Matches]
+      summary: Avvia una partita esistente (CREATED → STARTED)
+      description: |
+        Imposta status=STARTED, startTime e currentTurnPlayerId (giocatore con playerOrder=1).
+        Solo partite in stato CREATED o PAUSED possono essere avviate.
+      operationId: startMatchById
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Partita avviata
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Partita #5 avviata con successo!"
+        "400":
+          description: Stato partita non valido per l'avvio
+        "404":
+          description: Partita non trovata
+
+  /api/matches/{id}/pause:
+    post:
+      tags: [Matches]
+      summary: Mette in pausa una partita (STARTED → PAUSED)
+      operationId: pauseMatch
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Partita in pausa
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+        "404":
+          description: Partita non trovata
+
+  /api/matches/{id}/end:
+    post:
+      tags: [Matches]
+      summary: Termina una partita (→ FINISHED)
+      description: |
+        Calcola il vincitore per patrimonio netto (saldo + valore proprietà).
+        Aggiorna le statistiche di giocatori, tavoli e sede.
+      operationId: endMatch
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Partita terminata con vincitore calcolato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+        "404":
+          description: Partita non trovata
+
+  /api/matches/{id}:
+    delete:
+      tags: [Matches]
+      summary: Elimina partita e tutti i dati associati
+      description: Elimina anche SensorEvent, MatchPropertyState e MatchPlayer relativi.
+      operationId: deleteMatch
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Partita eliminata
+        "404":
+          description: Partita non trovata
+
+  /api/matches/{id}/schedule:
+    put:
+      tags: [Matches]
+      summary: Aggiorna pianificazione di una partita
+      operationId: scheduleMatch
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scheduledTime:
+                  type: string
+                  example: "2026-06-15T20:00:00"
+                gameTableId:
+                  type: integer
+                  format: int64
+      responses:
+        "200":
+          description: Pianificazione aggiornata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+
+  /api/matches/{id}/players:
+    get:
+      tags: [Matches]
+      summary: Elenco giocatori della partita
+      operationId: getMatchPlayers
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Lista MatchPlayer
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MatchPlayer"
+
+  /api/matches/{id}/properties:
+    get:
+      tags: [Matches]
+      summary: Stato proprietà della partita
+      operationId: getMatchProperties
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Lista MatchPropertyState
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MatchPropertyState"
+
+  /api/matches/{id}/events:
+    get:
+      tags: [Matches]
+      summary: Ultimi eventi sensore della partita (max 1000)
+      operationId: getMatchEvents
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Lista SensorEvent ordinati per id decrescente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SensorEvent"
+
+  /api/matches/{id}/rotate-turn:
+    post:
+      tags: [Matches]
+      summary: Passa il turno al prossimo giocatore non fallito
+      operationId: rotateTurn
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Turno aggiornato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+        "404":
+          description: Partita non trovata
+
+  /api/matches/{id}/reset:
+    post:
+      tags: [Matches]
+      summary: Reset partita (riparte da STARTED, saldo 1500 per tutti)
+      operationId: resetMatch
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Reset completato
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Reset completed successfully for Match #3!"
+
+  /api/matches/simulate-event:
+    post:
+      tags: [Matches]
+      summary: Processa evento sensore nel motore di gioco
+      description: |
+        Endpoint chiamato dall'IoT Gateway (e usabile per test manuali).
+        Salva l'evento in match.db e lo processa nel GameEngineService.
+        La partita deve essere in stato STARTED.
+      operationId: simulateSensorEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SensorEvent"
+            example:
+              matchId: 1
+              zoneId: 12
+              taggedObjectId: 101
+              eventType: "ENTER"
+              rawPayload: "{\"source\":\"rfid-reader-3\"}"
+      responses:
+        "200":
+          description: Evento salvato e processato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SensorEvent"
+        "400":
+          description: matchId mancante o partita non in stato STARTED
+        "500":
+          description: Errore nel motore di gioco
+
+  # ─────────────────────────────────────────────────────────────
+  # TOURNAMENTS (→ match-service :8082)
+  # ─────────────────────────────────────────────────────────────
+  /api/tournaments:
+    get:
+      tags: [Tournaments]
+      summary: Elenco tornei (con aggiornamento automatico stato FINISHED)
+      operationId: listTournaments
+      responses:
+        "200":
+          description: Lista tornei
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tournament"
+
+  /api/tournaments/create:
+    post:
+      tags: [Tournaments]
+      summary: Crea torneo e genera il primo round
+      description: |
+        Crea il torneo, registra i giocatori (con shuffle casuale per il bracket),
+        e genera i match del primo round con al massimo 4 giocatori per partita.
+      operationId: createTournament
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, playerIds]
+              properties:
+                name:
+                  type: string
+                  example: "Torneo Primavera 2026"
+                playerIds:
+                  type: array
+                  minItems: 2
+                  items:
+                    type: integer
+                  example: [1, 2, 3, 4, 5, 6, 7, 8]
+                venueId:
+                  type: integer
+                  format: int64
+                  example: 1
+      responses:
+        "200":
+          description: Torneo creato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tournament"
+        "400":
+          description: Numero di giocatori non valido (minimo 2)
+
+  /api/tournaments/{id}:
+    delete:
+      tags: [Tournaments]
+      summary: Elimina torneo e tutti i dati associati (match, giocatori)
+      operationId: deleteTournament
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Torneo eliminato
+        "404":
+          description: Torneo non trovato
+
+  /api/tournaments/{id}/bracket:
+    get:
+      tags: [Tournaments]
+      summary: Tabellone del torneo
+      description: Restituisce tutti i match del torneo con i giocatori e il vincitore.
+      operationId: getTournamentBracket
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Bracket torneo
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                      format: int64
+                    status:
+                      type: string
+                    winnerId:
+                      type: integer
+                      format: int64
+                      nullable: true
+                    players:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          userId:
+                            type: integer
+                          balance:
+                            type: integer
+
+  /api/tournaments/{id}/advance-round:
+    post:
+      tags: [Tournaments]
+      summary: Genera il turno successivo con i vincitori del round corrente
+      description: |
+        Raccoglie i vincitori dei match FINISHED, verifica che non siano già stati
+        avanzati in turni precedenti, e genera nuovi match (max 4 per partita).
+        Richiede almeno 2 vincitori disponibili.
+      operationId: advanceRound
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Turno generato
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matchesCreated:
+                    type: integer
+                    example: 2
+        "400":
+          description: Vincitori insufficienti per avanzare
+        "404":
+          description: Torneo non trovato
+
+  # ─────────────────────────────────────────────────────────────
+  # ANALYTICS (→ match-service :8082)
+  # ─────────────────────────────────────────────────────────────
+  /api/analytics/dashboard:
+    get:
+      tags: [Analytics]
+      summary: Metriche aggregate della piattaforma
+      operationId: getAnalyticsDashboard
+      responses:
+        "200":
+          description: Dashboard analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsDashboardDTO"
+
+  /api/analytics/leaderboard:
+    get:
+      tags: [Analytics]
+      summary: Classifica globale dei giocatori
+      description: |
+        Calcola il punteggio per ogni giocatore sommando:
+        punti posizione (1°=1000, 2°=500, 3°=300, 4°=200, 5°=100, altro=50)
+        + saldo finale + valore proprietà possedute al termine di ogni partita FINISHED.
+      operationId: getLeaderboard
+      responses:
+        "200":
+          description: Classifica globale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GlobalLeaderboardDTO"
+
+  # ─────────────────────────────────────────────────────────────
+  # GAME SETTINGS (→ match-service :8082)
+  # ─────────────────────────────────────────────────────────────
+  /api/game-settings:
+    get:
+      tags: [Game Settings]
+      summary: Legge le impostazioni di gioco attive
+      description: Se non esistono impostazioni, ne crea una di default.
+      operationId: getGameSettings
+      responses:
+        "200":
+          description: Impostazioni correnti
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameSettings"
+    put:
+      tags: [Game Settings]
+      summary: Aggiorna impostazioni di gioco
+      operationId: updateGameSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GameSettings"
+            example:
+              initialBalance: 1500
+              maxPlayers: 4
+              sensorModeActive: true
+      responses:
+        "200":
+          description: Impostazioni aggiornate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameSettings"
+
+  # ─────────────────────────────────────────────────────────────
+  # IOT SYNC (→ iot-gateway :8085)
+  # ─────────────────────────────────────────────────────────────
+  /api/sync/status:
+    get:
+      tags: [IoT Sync]
+      summary: Stato del buffer offline e della sincronizzazione
+      operationId: getSyncStatus
+      responses:
+        "200":
+          description: Stato sincronizzazione
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dbReachable:
+                    type: boolean
+                    description: true se iot.db è raggiungibile
+                  syncRunning:
+                    type: boolean
+                    description: true se una sincronizzazione è in corso
+                  pendingEvents:
+                    type: integer
+                    description: Numero di eventi non ancora sincronizzati nel buffer
+                  lastSyncAt:
+                    type: string
+                    description: Timestamp dell'ultima sincronizzazione riuscita
+                  bufferFile:
+                    type: string
+                    description: Percorso assoluto del file buffer JSONL
+              example:
+                dbReachable: true
+                syncRunning: false
+                pendingEvents: 0
+                lastSyncAt: "2026-06-03T10:30:00"
+                bufferFile: "/app/sensor_events_buffer.jsonl"
+
+  /api/sync/trigger:
+    post:
+      tags: [IoT Sync]
+      summary: Forza una sincronizzazione immediata del buffer offline
+      operationId: triggerSync
+      responses:
+        "200":
+          description: Risultato sincronizzazione
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, already_running]
+                  syncedEvents:
+                    type: integer
+                    description: Numero di eventi sincronizzati (presente se status=ok)
+                  pendingEvents:
+                    type: integer
+                  lastSyncAt:
+                    type: string
+                  message:
+                    type: string
+                    description: Presente se status=already_running
+
+# ─────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: Identificatore univoco della risorsa
+
+  schemas:
+    User:
+      type: object
+      description: Utente della piattaforma (giocatore, venue manager o admin)
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        username:
+          type: string
+          example: "mario_rossi"
+        email:
+          type: string
+          format: email
+          example: "mario@example.com"
+        passwordHash:
+          type: string
+          description: Hash della password (non restituire in produzione)
+        status:
+          type: string
+          example: "ONLINE"
+        fullName:
+          type: string
+          example: "Mario Rossi"
+        active:
+          type: boolean
+          default: true
+        wantsTournament:
+          type: boolean
+          default: false
+          description: true se il giocatore è disponibile per tornei
+        bio:
+          type: string
+        gender:
+          type: string
+        age:
+          type: integer
+        avatar:
+          type: string
+          description: URL o base64 dell'immagine avatar
+        adminNotice:
+          type: string
+          description: Comunicazione mostrata al prossimo accesso
+
+    Venue:
+      type: object
+      description: Sede fisica dove si trovano i tavoli Monopoly IoT
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+          example: "Sala Giochi Centrale"
+        location:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+          example: "Milano"
+        type:
+          type: string
+          description: Tipo di sede (es. "Sala Giochi", "Bar", "Circolo")
+        contactInfo:
+          type: string
+        ownerUserId:
+          type: integer
+          format: int64
+          description: userId del Venue Manager responsabile della sede
+
+    VenueWithTables:
+      type: object
+      description: Sede con lista dei tavoli associati
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        city:
+          type: string
+        location:
+          type: string
+        tables:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+                format: int64
+              code:
+                type: string
+              name:
+                type: string
+              status:
+                type: string
+
+    GameTable:
+      type: object
+      description: Tavolo fisico di gioco con sensori RFID
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        venueId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [ONLINE, OFFLINE, MAINTENANCE]
+          example: "ONLINE"
+        displayName:
+          type: string
+          example: "Tavolo Nexus-01"
+        tableCode:
+          type: string
+          example: "TBL001"
+        gameTypeId:
+          type: integer
+          format: int64
+          default: 1
+          description: Tipo di gioco (1 = Monopoly)
+
+    ReadingZone:
+      type: object
+      description: Zona di lettura RFID su un tavolo fisico
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        gameTableId:
+          type: integer
+          format: int64
+        zoneCode:
+          type: string
+          example: "1-PROP-BLUE-1"
+          description: Codice hardware del sensore
+        zoneName:
+          type: string
+          example: "Parco della Vittoria"
+        zoneType:
+          type: string
+          enum: [PROPERTY, WALLET, TURN, SPECIAL]
+          description: Tipo funzionale della zona
+        playerSlot:
+          type: integer
+          description: Slot giocatore (per zone WALLET e TURN)
+          nullable: true
+
+    Match:
+      type: object
+      description: Partita di Monopoly IoT
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        gameTableId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [CREATED, STARTED, PAUSED, FINISHED, CANCELLED, SCHEDULED]
+          example: "CREATED"
+        currentTurnPlayerId:
+          type: integer
+          format: int64
+          description: ID del MatchPlayer a cui spetta il turno corrente
+          nullable: true
+        scheduledTime:
+          type: string
+          example: "2026-06-10T18:00:00"
+        maxPlayers:
+          type: integer
+          default: 4
+        tournamentId:
+          type: integer
+          format: int64
+          nullable: true
+        winnerPlayerId:
+          type: integer
+          format: int64
+          nullable: true
+          description: userId del vincitore (impostato al termine)
+        startTime:
+          type: string
+          nullable: true
+        endTime:
+          type: string
+          nullable: true
+
+    MatchPlayer:
+      type: object
+      description: Giocatore iscritto a una specifica partita
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        matchId:
+          type: integer
+          format: int64
+        userId:
+          type: integer
+          format: int64
+        playerOrder:
+          type: integer
+          description: Ordine di turno (1 = primo)
+        currentBalance:
+          type: integer
+          description: Saldo attuale in lire Monopoly (iniziale = initialBalance da GameSettings)
+          example: 1500
+        inGame:
+          type: integer
+          description: 1 = attivo in partita, 0 = eliminato/uscito
+          enum: [0, 1]
+        bankrupt:
+          type: integer
+          description: 1 = fallito, 0 = ancora in gioco
+          enum: [0, 1]
+
+    MatchPropertyState:
+      type: object
+      description: Stato di una proprietà Monopoly durante una partita
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        matchId:
+          type: integer
+          format: int64
+        propertyId:
+          type: integer
+          format: int64
+          description: Riferimento a monopoly_properties.id
+        ownerMatchPlayerId:
+          type: integer
+          format: int64
+          nullable: true
+          description: ID del MatchPlayer proprietario (null = non acquistata)
+        mortgaged:
+          type: integer
+          enum: [0, 1]
+          description: 1 = ipotecata
+        houses:
+          type: integer
+          description: Numero di case costruite (0-4)
+        hotels:
+          type: integer
+          description: Numero di alberghi (0-1)
+
+    SensorEvent:
+      type: object
+      description: Evento generato da un sensore RFID durante una partita
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        matchId:
+          type: integer
+          format: int64
+        zoneId:
+          type: integer
+          format: int64
+          description: Riferimento a reading_zones.id
+        taggedObjectId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Riferimento a tagged_objects.id
+        eventType:
+          type: string
+          enum:
+            - ENTER
+            - PRESENT
+            - EXIT
+            - AUCTION_WON
+            - PROPERTY_BOUGHT
+            - HOUSE_BUILD
+            - PROPERTY_SOLD
+            - TRADE_SWAP
+            - PASS_CARD
+        rawPayload:
+          type: string
+          nullable: true
+          description: Payload JSON opzionale con dati aggiuntivi del sensore
+        detectedAt:
+          type: string
+          description: Timestamp ISO8601 di ricezione dell'evento
+        processed:
+          type: integer
+          enum: [0, 1]
+          description: 1 = processato dal GameEngineService
+
+    Tournament:
+      type: object
+      description: Torneo che raggruppa più partite con bracket eliminazione
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+          example: "Torneo Primavera 2026"
+        gameTypeId:
+          type: integer
+          format: int64
+          default: 1
+        status:
+          type: string
+          enum: [ONGOING, FINISHED, CANCELLED]
+          example: "ONGOING"
+        startDate:
+          type: string
+        endDate:
+          type: string
+          nullable: true
+        createdByUserId:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+
+    GameSettings:
+      type: object
+      description: Impostazioni globali di gioco (singleton)
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        initialBalance:
+          type: integer
+          default: 1500
+          description: Saldo iniziale in lire Monopoly per ogni giocatore
+        maxPlayers:
+          type: integer
+          default: 4
+          description: Numero massimo di giocatori per partita
+        sensorModeActive:
+          type: boolean
+          default: true
+          description: true = eventi fisici RFID; false = modalità manuale
+
+    AnalyticsDashboardDTO:
+      type: object
+      description: Metriche aggregate della piattaforma
+      properties:
+        totalMatches:
+          type: integer
+        activeVenues:
+          type: integer
+        platformGrowth:
+          type: number
+          format: double
+          description: Percentuale di crescita piattaforma
+        avgMatchDuration:
+          type: string
+          example: "42m"
+        mostActiveVenues:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              activityScore:
+                type: number
+        topProperties:
+          type: array
+          items:
+            type: string
+          description: Nomi delle proprietà più acquistate
+
+    GlobalLeaderboardDTO:
+      type: object
+      description: Classifica globale dei giocatori
+      properties:
+        topPlayers:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardPlayerDTO"
+          description: Top 3 giocatori
+        allPlayers:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardPlayerDTO"
+        totalMatchesToday:
+          type: integer
+        topVenue:
+          type: string
+
+    LeaderboardPlayerDTO:
+      type: object
+      properties:
+        rank:
+          type: integer
+        id:
+          type: integer
+          format: int64
+        fullName:
+          type: string
+        username:
+          type: string
+        venueName:
+          type: string
+        wins:
+          type: integer
+        matches:
+          type: integer
+        tournaments:
+          type: integer
+        totalScore:
+          type: integer
+        status:
+          type: string
+          enum: [ONLINE, IN GIOCO, IN ATTESA]
+        winRate:
+          type: string
+          example: "75%"
+        wantsTournament:
+          type: boolean
+        avatar:
+          type: string
+          nullable: true
+
+    PlayerDashboardDTO:
+      type: object
+      description: Dati completi della dashboard personalizzata del giocatore
+      properties:
+        username:
+          type: string
+        ranking:
+          type: integer
+          description: Posizione nella classifica globale
+        tier:
+          type: string
+          example: "Professionista (Tier B)"
+          description: "Tier basato sul ranking: S+, A, B, C"
+        totalMatches:
+          type: integer
+        topPercentile:
+          type: string
+          example: "Top 25%"
+        winLossRatio:
+          type: number
+          format: double
+          description: Percentuale di vittorie
+        avgBalance:
+          type: string
+          example: "₮ 1823"
+        stdDevBalance:
+          type: string
+          example: "₮ 342"
+        topAssets:
+          type: array
+          items:
+            type: string
+        recentEntries:
+          type: array
+          items:
+            $ref: "#/components/schemas/MatchHistoryDTO"
+        upcomingTournaments:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpcomingTournamentDTO"
+          description: Partite disponibili (CREATED) non ancora piene
+        subscribedMatches:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpcomingTournamentDTO"
+          description: Partite a cui il giocatore è già iscritto
+        wonTournaments:
+          type: array
+          items:
+            $ref: "#/components/schemas/WonTournamentDTO"
+        wantsTournament:
+          type: boolean
+
+    MatchHistoryDTO:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "#7"
+        name:
+          type: string
+          example: "Tavolo 1"
+        duration:
+          type: string
+          example: "1h 23m"
+        revenue:
+          type: string
+          example: "+M 2400"
+        outcome:
+          type: string
+          enum: [Vittoria, Sconfitta, In Corso, In Attesa]
+        isVictory:
+          type: boolean
+
+    UpcomingTournamentDTO:
+      type: object
+      properties:
+        name:
+          type: string
+        time:
+          type: string
+        active:
+          type: boolean
+          description: true = posti disponibili / partita in corso
+        matchId:
+          type: integer
+          format: int64
+        scheduledTime:
+          type: string
+        joined:
+          type: boolean
+          description: true = il giocatore è già iscritto
+
+    WonTournamentDTO:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        date:
+          type: string
+          example: "15/05/2026"
+        participants:
+          type: integer
+
+    VenueDashboardDTO:
+      type: object
+      description: Dashboard dello stato operativo di una sede
+      properties:
+        venueName:
+          type: string
+        matchesToday:
+          type: integer
+        matchesTrend:
+          type: integer
+          description: Variazione percentuale rispetto al giorno precedente
+        topBoardName:
+          type: string
+          description: Nome del tavolo con più occupancy
+        topBoardOccupancy:
+          type: integer
+          description: Occupancy 0-100 del tavolo più attivo
+        activeBoards:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardStatusDTO"
+        liveEvents:
+          type: array
+          items:
+            $ref: "#/components/schemas/LiveEventDTO"
+
+    BoardStatusDTO:
+      type: object
+      properties:
+        boardName:
+          type: string
+        status:
+          type: string
+          enum: [IN_MATCH, WAITING, ONLINE, OFFLINE]
+        currentPlayers:
+          type: integer
+        maxPlayers:
+          type: integer
+        duration:
+          type: string
+        matchId:
+          type: integer
+          format: int64
+          nullable: true
+
+    LiveEventDTO:
+      type: object
+      properties:
+        time:
+          type: string
+          example: "10:35"
+        type:
+          type: string
+          enum: [SYSTEM, ASSET, ERROR]
+        source:
+          type: string
+          example: "Sensore"
+        message:
+          type: string
